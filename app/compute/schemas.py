@@ -11,6 +11,7 @@ class TemplateCreate(BaseModel):
     algorithm: str = Field(min_length=2, max_length=120)
     parameter_schema: dict[str, dict[str, Any]]
     default_parameters: dict[str, Any] = Field(default_factory=dict)
+    review_thresholds: dict[str, Any] = Field(default_factory=dict)
     max_runtime_seconds: int = Field(default=600, ge=1, le=86400)
     max_attempts: int = Field(default=3, ge=1, le=20)
 
@@ -66,6 +67,11 @@ class PriorityRequest(BaseModel):
     actor: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=2, max_length=1000)
     priority: int = Field(ge=0, le=100)
+
+
+class ResultReview(BaseModel):
+    actor: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=2, max_length=1000)
 
 
 class BatchOperation(BaseModel):

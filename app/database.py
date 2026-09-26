@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS compute_templates (
     version INTEGER NOT NULL DEFAULT 1,
     parameter_schema_json TEXT NOT NULL,
     default_parameters_json TEXT NOT NULL DEFAULT '{}',
+    review_thresholds_json TEXT NOT NULL DEFAULT '{}',
     max_runtime_seconds INTEGER NOT NULL CHECK(max_runtime_seconds > 0),
     max_attempts INTEGER NOT NULL CHECK(max_attempts > 0),
     active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
@@ -259,6 +260,7 @@ CREATE TABLE IF NOT EXISTS compute_tasks (
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_expires_at TEXT NOT NULL DEFAULT '',
     current_result_version INTEGER,
+    published_result_version INTEGER,
     last_error_code TEXT NOT NULL DEFAULT '',
     last_error_message TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 1,
@@ -277,10 +279,26 @@ CREATE TABLE IF NOT EXISTS compute_results (
     result_json TEXT NOT NULL,
     metrics_json TEXT NOT NULL DEFAULT '{}',
     result_digest TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT 'candidate' CHECK(stage IN ('candidate','validated','published','retracted')),
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE(task_id, version)
 );
+CREATE TABLE IF NOT EXISTS compute_result_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    result_version INTEGER NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('validate','publish','retract')),
+    outcome TEXT NOT NULL CHECK(outcome IN ('approved','rejected')),
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    base_published_version INTEGER,
+    restored_version INTEGER,
+    diff_json TEXT NOT NULL DEFAULT '{}',
+    thresholds_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_result_reviews_task ON compute_result_reviews(task_id,id);
 CREATE TABLE IF NOT EXISTS compute_interventions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
@@ -311,6 +329,7 @@ PERMISSIONS = [
     ("announcements.write", "维护公告", "announcements", "write"),
     ("audit.read", "查看审计", "audit", "read"),
     ("jobs.run", "执行后台任务", "jobs", "run"),
+    ("compute.review", "复核计算结果", "compute", "review"),
 ]
 
 
@@ -359,10 +378,26 @@ def transaction(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         connection.commit()
 
 
+def _migrate_compute_schema(connection: sqlite3.Connection) -> None:
+    """为已有数据库补齐结果版本晋级所需的列，并保持历史数据的旧语义。"""
+    template_columns = {row[1] for row in connection.execute("PRAGMA table_info(compute_templates)")}
+    if template_columns and "review_thresholds_json" not in template_columns:
+        connection.execute("ALTER TABLE compute_templates ADD COLUMN review_thresholds_json TEXT NOT NULL DEFAULT '{}'")
+    task_columns = {row[1] for row in connection.execute("PRAGMA table_info(compute_tasks)")}
+    if task_columns and "published_result_version" not in task_columns:
+        connection.execute("ALTER TABLE compute_tasks ADD COLUMN published_result_version INTEGER")
+        connection.execute("UPDATE compute_tasks SET published_result_version=current_result_version WHERE current_result_version IS NOT NULL")
+    result_columns = {row[1] for row in connection.execute("PRAGMA table_info(compute_results)")}
+    if result_columns and "stage" not in result_columns:
+        connection.execute("ALTER TABLE compute_results ADD COLUMN stage TEXT NOT NULL DEFAULT 'candidate'")
+        connection.execute("UPDATE compute_results SET stage='published'")
+
+
 def init_db() -> None:
     now = to_storage(utc_now())
     with transaction(immediate=True) as connection:
         connection.executescript(SCHEMA)
+        _migrate_compute_schema(connection)
         for code, name, resource, action in PERMISSIONS:
             connection.execute(
                 "INSERT OR IGNORE INTO permissions(code,name,resource,action) VALUES(?,?,?,?)",

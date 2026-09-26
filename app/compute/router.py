@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, QuotaSet, RetryRequest, TaskClaim, TaskFailure, TaskResult, TaskSubmit, TemplateCreate
+from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, QuotaSet, ResultReview, RetryRequest, TaskClaim, TaskFailure, TaskResult, TaskSubmit, TemplateCreate
 from app.compute.service import ComputeOperationsService
 
 router = APIRouter(prefix="/api/compute", tags=["科学计算任务运营"])
@@ -40,6 +40,31 @@ def list_tasks(status: str | None = None, project_code: str | None = None, reque
 @router.get("/task-details/{task_id}")
 def get_task(task_id: int):
     return service().get_task(task_id)
+
+
+@router.get("/tasks/{task_id}/results")
+def list_results(task_id: int):
+    return service().list_results(task_id)
+
+
+@router.get("/tasks/{task_id}/results/compare")
+def compare_results(task_id: int, candidate_version: int = Query(..., ge=1), base_version: int | None = Query(default=None, ge=1)):
+    return service().compare_versions(task_id, candidate_version, base_version)
+
+
+@router.post("/tasks/{task_id}/results/{version}/validate")
+def validate_result(task_id: int, version: int, payload: ResultReview):
+    return service().validate_result(task_id, version, payload.actor, payload.reason)
+
+
+@router.post("/tasks/{task_id}/results/{version}/publish")
+def publish_result(task_id: int, version: int, payload: ResultReview):
+    return service().publish_result(task_id, version, payload.actor, payload.reason)
+
+
+@router.post("/tasks/{task_id}/results/{version}/retract")
+def retract_result(task_id: int, version: int, payload: ResultReview):
+    return service().retract_result(task_id, version, payload.actor, payload.reason)
 
 
 @router.post("/tasks/claim")

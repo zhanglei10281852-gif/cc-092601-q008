@@ -21,10 +21,10 @@ class ComputeRepository:
         rows = self.connection.execute("SELECT * FROM compute_templates WHERE active=1 ORDER BY code,version").fetchall()
         return [dict(row) for row in rows]
 
-    def create_template(self, *, code: str, name: str, algorithm: str, parameter_schema: dict[str, Any], defaults: dict[str, Any], max_runtime_seconds: int, max_attempts: int, created_by: str, now: str) -> dict[str, Any]:
+    def create_template(self, *, code: str, name: str, algorithm: str, parameter_schema: dict[str, Any], defaults: dict[str, Any], review_thresholds: dict[str, Any], max_runtime_seconds: int, max_attempts: int, created_by: str, now: str) -> dict[str, Any]:
         cursor = self.connection.execute(
-            "INSERT INTO compute_templates(code,name,algorithm,version,parameter_schema_json,default_parameters_json,max_runtime_seconds,max_attempts,active,created_by,created_at,updated_at) VALUES(?,?,?,1,?,?,?,?,1,?,?,?)",
-            (code, name, algorithm, json.dumps(parameter_schema, ensure_ascii=False, sort_keys=True), json.dumps(defaults, ensure_ascii=False, sort_keys=True), max_runtime_seconds, max_attempts, created_by, now, now),
+            "INSERT INTO compute_templates(code,name,algorithm,version,parameter_schema_json,default_parameters_json,review_thresholds_json,max_runtime_seconds,max_attempts,active,created_by,created_at,updated_at) VALUES(?,?,?,1,?,?,?,?,?,1,?,?,?)",
+            (code, name, algorithm, json.dumps(parameter_schema, ensure_ascii=False, sort_keys=True), json.dumps(defaults, ensure_ascii=False, sort_keys=True), json.dumps(review_thresholds, ensure_ascii=False, sort_keys=True), max_runtime_seconds, max_attempts, created_by, now, now),
         )
         return dict(self.template_by_id(cursor.lastrowid))
 
@@ -46,7 +46,7 @@ class ComputeRepository:
         return int(self.connection.execute("SELECT COUNT(*) FROM compute_tasks WHERE requested_by=? AND created_at>=?", (requested_by, since)).fetchone()[0])
 
     def task_by_id(self, task_id: int) -> sqlite3.Row | None:
-        return self.connection.execute("SELECT t.*,tpl.code AS template_code,tpl.algorithm AS template_algorithm FROM compute_tasks t JOIN compute_templates tpl ON tpl.id=t.template_id WHERE t.id=?", (task_id,)).fetchone()
+        return self.connection.execute("SELECT t.*,tpl.code AS template_code,tpl.algorithm AS template_algorithm,tpl.review_thresholds_json AS review_thresholds_json FROM compute_tasks t JOIN compute_templates tpl ON tpl.id=t.template_id WHERE t.id=?", (task_id,)).fetchone()
 
     def task_by_idempotency(self, requested_by: str, key: str) -> sqlite3.Row | None:
         return self.connection.execute("SELECT * FROM compute_tasks WHERE requested_by=? AND idempotency_key=?", (requested_by, key)).fetchone()
@@ -73,6 +73,28 @@ class ComputeRepository:
 
     def result_versions(self, task_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM compute_results WHERE task_id=? ORDER BY version", (task_id,)).fetchall()]
+
+    def result_version(self, task_id: int, version: int) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_results WHERE task_id=? AND version=?", (task_id, version)).fetchone()
+
+    def previous_published_version(self, task_id: int, before_version: int) -> int | None:
+        row = self.connection.execute("SELECT MAX(version) FROM compute_results WHERE task_id=? AND version<? AND stage='published'", (task_id, before_version)).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    def result_reviews(self, task_id: int) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.connection.execute("SELECT * FROM compute_result_reviews WHERE task_id=? ORDER BY id", (task_id,)).fetchall()]
+
+    def latest_review(self, task_id: int, version: int, *, action: str, outcome: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM compute_result_reviews WHERE task_id=? AND result_version=? AND action=? AND outcome=? ORDER BY id DESC LIMIT 1",
+            (task_id, version, action, outcome),
+        ).fetchone()
+
+    def add_review(self, *, task_id: int, result_version: int, action: str, outcome: str, actor: str, reason: str, base_published_version: int | None, restored_version: int | None, diff: dict[str, Any], thresholds: dict[str, Any], now: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_result_reviews(task_id,result_version,action,outcome,actor,reason,base_published_version,restored_version,diff_json,thresholds_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, result_version, action, outcome, actor, reason, base_published_version, restored_version, json.dumps(diff, ensure_ascii=False, sort_keys=True), json.dumps(thresholds, ensure_ascii=False, sort_keys=True), now),
+        )
 
     def interventions(self, task_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM compute_interventions WHERE task_id=? ORDER BY id", (task_id,)).fetchall()]
