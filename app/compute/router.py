@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
-from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, QuotaSet, RetryRequest, TaskClaim, TaskFailure, TaskResult, TaskSubmit, TemplateCreate
+from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, PromotionPublish, PromotionReview, PromotionSubmit, PromotionWithdraw, QuotaSet, RecomputeRequest, RetryRequest, TaskClaim, TaskFailure, TaskResult, TaskSubmit, TemplateCreate
 from app.compute.service import ComputeOperationsService
 
 router = APIRouter(prefix="/api/compute", tags=["科学计算任务运营"])
@@ -42,6 +42,36 @@ def get_task(task_id: int):
     return service().get_task(task_id)
 
 
+@router.get("/tasks/{task_id}/versions")
+def version_overview(task_id: int):
+    return service().version_overview(task_id)
+
+
+@router.get("/tasks/{task_id}/results/{result_version}/diff")
+def promotion_diff(task_id: int, result_version: int):
+    return service().promotion_diff(task_id, result_version)
+
+
+@router.post("/tasks/{task_id}/results/{result_version}/promotions/submit")
+def submit_promotion(task_id: int, result_version: int, payload: PromotionSubmit):
+    return service().submit_promotion(task_id, result_version, payload.submitter)
+
+
+@router.post("/tasks/{task_id}/results/{result_version}/promotions/review")
+def review_promotion(task_id: int, result_version: int, payload: PromotionReview):
+    return service().review_promotion(task_id, result_version, payload.reviewer, payload.approve, payload.comment)
+
+
+@router.post("/tasks/{task_id}/results/{result_version}/promotions/publish")
+def publish_promotion(task_id: int, result_version: int, payload: PromotionPublish):
+    return service().publish_promotion(task_id, result_version, payload.publisher)
+
+
+@router.post("/tasks/{task_id}/results/{result_version}/promotions/withdraw")
+def withdraw_promotion(task_id: int, result_version: int, payload: PromotionWithdraw):
+    return service().withdraw_promotion(task_id, result_version, payload.actor, payload.reason)
+
+
 @router.post("/tasks/claim")
 def claim_task(payload: TaskClaim):
     return {"task": service().claim(payload.worker_id, payload.capabilities, payload.lease_seconds)}
@@ -70,6 +100,11 @@ def cancel_task(task_id: int, payload: CancelRequest):
 @router.post("/tasks/{task_id}/retry")
 def retry_task(task_id: int, payload: RetryRequest):
     return service().retry(task_id, payload.actor, payload.reason, payload.priority)
+
+
+@router.post("/tasks/{task_id}/recompute")
+def recompute_task(task_id: int, payload: RecomputeRequest):
+    return service().recompute(task_id, payload.actor, payload.reason)
 
 
 @router.post("/tasks/{task_id}/priority")

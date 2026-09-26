@@ -11,6 +11,9 @@
 - 失败恢复：租约过期后可由恢复入口将任务重新排队，达到最大尝试次数的任务转为失败。
 - 配额控制：可保存用户、角色或项目的排队数、运行数和每日提交上限；当前提交路径执行用户配额。
 - 结果版本：每次成功回执保存不可变结果、指标摘要和内容摘要，任务指向当前结果版本。
+- 同输入重算：已结束任务可通过重算入口复用同一批输入重新排队，产生新的结果版本而不是新任务。
+- 结果晋级：每个结果版本依次经历候选（candidate）、已验证（validated）、已发布（published）、已撤回（withdrawn）。提交时按模板晋级策略比较候选版本与当前发布版本的关键指标和结构化差异，只有全部阈值通过且由授权复核人（不得是提交人本人）在审批有效期内确认，才能在同一事务内原子切换 `published_result_version`。
+- 撤回与回溯：撤回只作用于当前发布版本，自动恢复到发布历史中最近一个仍可用的版本（没有则清空发布指针），结果、晋级记录、发布历史和事件全部保留；查询接口同时返回计算最新版本与对外发布版本。
 - 人工干预：取消、人工重试、优先级调整和批量操作均保留操作者、原因、前后状态和批次标识。
 - 登录与角色：基础管理模块提供管理员初始化、用户、角色、会话和细粒度权限。
 
@@ -50,6 +53,31 @@ curl -sS http://127.0.0.1:8432/api/system/health
 ```
 
 计算任务摘要位于 `/api/compute/summary`，模板、配额、提交、领取、回执和人工操作接口统一使用 `/api/compute` 前缀。
+
+### 结果晋级流程
+
+模板可通过 `promotion_policy` 声明发布门槛（均可选，未声明的约束不生效）：
+
+```json
+{
+  "reviewers": ["reviewer-1"],
+  "approval_ttl_seconds": 86400,
+  "metric_thresholds": {"rmse": {"max": 0.1, "direction": "minimize"}},
+  "max_relative_metric_delta": {"rmse": 0.2},
+  "max_added_paths": 0,
+  "max_removed_paths": 0
+}
+```
+
+结果版本的晋级与查询接口（`{v}` 为结果版本号）：
+
+- `POST /api/compute/tasks/{id}/recompute`：对同一批输入用新算法重算，产生新版本。
+- `GET  /api/compute/tasks/{id}/results/{v}/diff`：候选版本相对当前发布版本的结构化差异与关键指标对比。
+- `POST /api/compute/tasks/{id}/results/{v}/promotions/submit`：提交晋级，立即按模板阈值校验，未达标保留候选并返回未通过项。
+- `POST /api/compute/tasks/{id}/results/{v}/promotions/review`：授权复核人批准（→ validated）或驳回（→ candidate，需重新提交）；提交人不能复核自己的版本。
+- `POST /api/compute/tasks/{id}/results/{v}/promotions/publish`：在审批有效期内原子切换发布版本；旧审批不能覆盖后来已发布的更新版本。
+- `POST /api/compute/tasks/{id}/results/{v}/promotions/withdraw`：撤回当前发布版本，恢复到上一可用版本且不删除历史。
+- `GET  /api/compute/tasks/{id}/versions`：同时返回计算最新版本（`latest_result_version`）与对外发布版本（`published_result_version`）。
 
 ## 测试
 

@@ -21,10 +21,10 @@ class ComputeRepository:
         rows = self.connection.execute("SELECT * FROM compute_templates WHERE active=1 ORDER BY code,version").fetchall()
         return [dict(row) for row in rows]
 
-    def create_template(self, *, code: str, name: str, algorithm: str, parameter_schema: dict[str, Any], defaults: dict[str, Any], max_runtime_seconds: int, max_attempts: int, created_by: str, now: str) -> dict[str, Any]:
+    def create_template(self, *, code: str, name: str, algorithm: str, parameter_schema: dict[str, Any], defaults: dict[str, Any], promotion_policy: dict[str, Any], max_runtime_seconds: int, max_attempts: int, created_by: str, now: str) -> dict[str, Any]:
         cursor = self.connection.execute(
-            "INSERT INTO compute_templates(code,name,algorithm,version,parameter_schema_json,default_parameters_json,max_runtime_seconds,max_attempts,active,created_by,created_at,updated_at) VALUES(?,?,?,1,?,?,?,?,1,?,?,?)",
-            (code, name, algorithm, json.dumps(parameter_schema, ensure_ascii=False, sort_keys=True), json.dumps(defaults, ensure_ascii=False, sort_keys=True), max_runtime_seconds, max_attempts, created_by, now, now),
+            "INSERT INTO compute_templates(code,name,algorithm,version,parameter_schema_json,default_parameters_json,promotion_policy_json,max_runtime_seconds,max_attempts,active,created_by,created_at,updated_at) VALUES(?,?,?,1,?,?,?,?,?,1,?,?,?)",
+            (code, name, algorithm, json.dumps(parameter_schema, ensure_ascii=False, sort_keys=True), json.dumps(defaults, ensure_ascii=False, sort_keys=True), json.dumps(promotion_policy, ensure_ascii=False, sort_keys=True), max_runtime_seconds, max_attempts, created_by, now, now),
         )
         return dict(self.template_by_id(cursor.lastrowid))
 
@@ -102,3 +102,73 @@ class ComputeRepository:
             values,
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def result_by_version(self, task_id: int, result_version: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM compute_results WHERE task_id=? AND version=?",
+            (task_id, result_version),
+        ).fetchone()
+
+    def promotion_by_version(self, task_id: int, result_version: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM compute_result_promotions WHERE task_id=? AND result_version=?",
+            (task_id, result_version),
+        ).fetchone()
+
+    def promotion_by_id(self, promotion_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM compute_result_promotions WHERE id=?",
+            (promotion_id,),
+        ).fetchone()
+
+    def promotions(self, task_id: int) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM compute_result_promotions WHERE task_id=? ORDER BY result_version",
+                (task_id,),
+            ).fetchall()
+        ]
+
+    def create_promotion(self, *, task_id: int, result_version: int, diff_summary: dict[str, Any], threshold_checks: dict[str, Any], policy_snapshot: dict[str, Any], submitted_by: str, submitted_at: str, approval_expires_at: str, now: str) -> dict[str, Any]:
+        cursor = self.connection.execute(
+            "INSERT INTO compute_result_promotions(task_id,result_version,lifecycle_stage,diff_summary_json,threshold_checks_json,policy_snapshot_json,submitted_by,submitted_at,approval_expires_at,created_at,updated_at) VALUES(?,?,'candidate',?,?,?,?,?,?,?,?)",
+            (task_id, result_version, json.dumps(diff_summary, ensure_ascii=False, sort_keys=True), json.dumps(threshold_checks, ensure_ascii=False, sort_keys=True), json.dumps(policy_snapshot, ensure_ascii=False, sort_keys=True), submitted_by, submitted_at, approval_expires_at, now, now),
+        )
+        return dict(self.promotion_by_id(cursor.lastrowid))
+
+    def add_promotion_event(self, *, task_id: int, promotion_id: int | None, result_version: int | None, action: str, actor: str, from_stage: str, to_stage: str, summary: dict[str, Any], now: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_promotion_events(task_id,promotion_id,result_version,action,actor,from_stage,to_stage,summary_json,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (task_id, promotion_id, result_version, action, actor, from_stage, to_stage, json.dumps(summary, ensure_ascii=False, sort_keys=True), now),
+        )
+
+    def promotion_events(self, task_id: int) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM compute_promotion_events WHERE task_id=? ORDER BY id",
+                (task_id,),
+            ).fetchall()
+        ]
+
+    def last_release(self, task_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM compute_release_history WHERE task_id=? ORDER BY sequence DESC,id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+
+    def add_release(self, *, task_id: int, sequence: int, action: str, from_version: int | None, to_version: int | None, actor: str, reason: str, now: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_release_history(task_id,sequence,action,from_result_version,to_result_version,actor,reason,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (task_id, sequence, action, from_version, to_version, actor, reason, now),
+        )
+
+    def release_history(self, task_id: int) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM compute_release_history WHERE task_id=? ORDER BY sequence,id",
+                (task_id,),
+            ).fetchall()
+        ]

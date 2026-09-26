@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS compute_templates (
     version INTEGER NOT NULL DEFAULT 1,
     parameter_schema_json TEXT NOT NULL,
     default_parameters_json TEXT NOT NULL DEFAULT '{}',
+    promotion_policy_json TEXT NOT NULL DEFAULT '{}',
     max_runtime_seconds INTEGER NOT NULL CHECK(max_runtime_seconds > 0),
     max_attempts INTEGER NOT NULL CHECK(max_attempts > 0),
     active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
@@ -259,6 +260,7 @@ CREATE TABLE IF NOT EXISTS compute_tasks (
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_expires_at TEXT NOT NULL DEFAULT '',
     current_result_version INTEGER,
+    published_result_version INTEGER,
     last_error_code TEXT NOT NULL DEFAULT '',
     last_error_message TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 1,
@@ -293,6 +295,58 @@ CREATE TABLE IF NOT EXISTS compute_interventions (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_compute_interventions_task ON compute_interventions(task_id,id);
+CREATE TABLE IF NOT EXISTS compute_result_promotions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    result_version INTEGER NOT NULL,
+    lifecycle_stage TEXT NOT NULL DEFAULT 'candidate' CHECK(lifecycle_stage IN ('candidate','validated','published','withdrawn')),
+    diff_summary_json TEXT NOT NULL DEFAULT '{}',
+    threshold_checks_json TEXT NOT NULL DEFAULT '{}',
+    policy_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    submitted_by TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT,
+    reviewed_by TEXT NOT NULL DEFAULT '',
+    reviewed_at TEXT,
+    review_comment TEXT NOT NULL DEFAULT '',
+    approval_expires_at TEXT NOT NULL DEFAULT '',
+    published_at TEXT,
+    withdrawn_by TEXT NOT NULL DEFAULT '',
+    withdrawn_at TEXT,
+    withdraw_reason TEXT NOT NULL DEFAULT '',
+    restored_result_version INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(task_id, result_version),
+    CHECK(submitted_by='' OR submitted_by<>reviewed_by OR reviewed_by='')
+);
+CREATE INDEX IF NOT EXISTS idx_compute_promotions_task ON compute_result_promotions(task_id,id);
+CREATE INDEX IF NOT EXISTS idx_compute_promotions_stage ON compute_result_promotions(lifecycle_stage,published_at);
+CREATE TABLE IF NOT EXISTS compute_release_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('publish','withdraw')),
+    from_result_version INTEGER,
+    to_result_version INTEGER,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_compute_release_history_task ON compute_release_history(task_id,sequence);
+CREATE TABLE IF NOT EXISTS compute_promotion_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    promotion_id INTEGER REFERENCES compute_result_promotions(id) ON DELETE SET NULL,
+    result_version INTEGER,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    from_stage TEXT NOT NULL DEFAULT '',
+    to_stage TEXT NOT NULL DEFAULT '',
+    summary_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_promotion_events_task ON compute_promotion_events(task_id,id);
 '''
 
 PERMISSIONS = [
@@ -363,6 +417,7 @@ def init_db() -> None:
     now = to_storage(utc_now())
     with transaction(immediate=True) as connection:
         connection.executescript(SCHEMA)
+        _migrate_compute_promotion(connection)
         for code, name, resource, action in PERMISSIONS:
             connection.execute(
                 "INSERT OR IGNORE INTO permissions(code,name,resource,action) VALUES(?,?,?,?)",
@@ -385,6 +440,20 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO role_permissions(role_id,permission_id,granted_at) SELECT ?,id,? FROM permissions",
             (administrator, now),
         )
+
+
+def _column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _migrate_compute_promotion(connection: sqlite3.Connection) -> None:
+    """为既有数据库补齐结果晋级流程需要的列（新库由 SCHEMA 直接建立）。"""
+    template_columns = _column_names(connection, "compute_templates")
+    if template_columns and "promotion_policy_json" not in template_columns:
+        connection.execute("ALTER TABLE compute_templates ADD COLUMN promotion_policy_json TEXT NOT NULL DEFAULT '{}'")
+    task_columns = _column_names(connection, "compute_tasks")
+    if task_columns and "published_result_version" not in task_columns:
+        connection.execute("ALTER TABLE compute_tasks ADD COLUMN published_result_version INTEGER")
 
 
 def migrate_db() -> None:

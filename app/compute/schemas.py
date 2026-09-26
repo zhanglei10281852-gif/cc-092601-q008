@@ -5,12 +5,29 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class MetricThresholdRule(BaseModel):
+    min: float | None = None
+    max: float | None = None
+    direction: Literal["minimize", "maximize"] | None = None
+
+
+class PromotionPolicy(BaseModel):
+    review_required: bool = True
+    approval_ttl_seconds: int = Field(default=86400, ge=1, le=366 * 24 * 3600)
+    reviewers: list[str] = Field(default_factory=list, max_length=200)
+    metric_thresholds: dict[str, MetricThresholdRule] = Field(default_factory=dict)
+    max_relative_metric_delta: dict[str, float] = Field(default_factory=dict)
+    max_added_paths: int | None = Field(default=None, ge=0)
+    max_removed_paths: int | None = Field(default=None, ge=0)
+
+
 class TemplateCreate(BaseModel):
     code: str = Field(min_length=2, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]+$")
     name: str = Field(min_length=2, max_length=120)
     algorithm: str = Field(min_length=2, max_length=120)
     parameter_schema: dict[str, dict[str, Any]]
     default_parameters: dict[str, Any] = Field(default_factory=dict)
+    promotion_policy: PromotionPolicy = Field(default_factory=PromotionPolicy)
     max_runtime_seconds: int = Field(default=600, ge=1, le=86400)
     max_attempts: int = Field(default=3, ge=1, le=20)
 
@@ -62,6 +79,11 @@ class RetryRequest(BaseModel):
     priority: int | None = Field(default=None, ge=0, le=100)
 
 
+class RecomputeRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=2, max_length=1000)
+
+
 class PriorityRequest(BaseModel):
     actor: str = Field(min_length=1, max_length=120)
     reason: str = Field(min_length=2, max_length=1000)
@@ -80,3 +102,22 @@ class BatchOperation(BaseModel):
         if self.operation == "priority" and self.priority is None:
             raise ValueError("批量调整优先级时必须提供 priority")
         return self
+
+
+class PromotionSubmit(BaseModel):
+    submitter: str = Field(min_length=1, max_length=120)
+
+
+class PromotionReview(BaseModel):
+    reviewer: str = Field(min_length=1, max_length=120)
+    approve: bool
+    comment: str = Field(default="", max_length=1000)
+
+
+class PromotionPublish(BaseModel):
+    publisher: str = Field(min_length=1, max_length=120)
+
+
+class PromotionWithdraw(BaseModel):
+    actor: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=2, max_length=1000)
